@@ -1,0 +1,54 @@
+FROM amazonlinux:2 as fips-awslinux-base
+
+# This needs to be set for the correct OpenSSL version to be used
+ENV OPENSSL_FIPS=1
+
+RUN yum update -y \
+    && yum install -y dracut-fips openssl \
+    && yum clean all \
+    && rm -rf /var/cache/yum
+
+# For Golang
+FROM fips-awslinux-base as fips-awslinux-golang
+RUN yum update -y && \
+    yum install -y tar gzip git gcc make curl file ldd
+
+ARG GOLANG_VERSION=1.20.4
+ARG ARCH=amd64
+ARG OS=linux
+
+# Download and install Golang
+RUN curl -LO "https://go.dev/dl/go${GOLANG_VERSION}.${OS}-${ARCH}.tar.gz" && \
+    tar -C /usr/local -xzf "go${GOLANG_VERSION}.${OS}-${ARCH}.tar.gz" && \
+    rm -f "go${GOLANG_VERSION}.${OS}-${ARCH}.tar.gz" && \
+    ls -la /usr/local/go/bin
+
+# Set Golang environment variables
+ENV GOPATH="/go"
+ENV GOROOT="/usr/local/go"
+ENV GOBIN="${GOPATH}/bin"
+ENV GO111MODULE="on"
+ENV GOOS=${OS}
+ENV GOARCH=${ARCH}
+
+# Add path to go binaries
+ENV PATH="${PATH}:${GOROOT}/bin:${GOBIN}"
+
+FROM fips-awslinux-golang as fips-awslinux-builder
+
+# Golang ENVs needed for BoringCrypto/FIPS
+ENV GOEXPERIMENT="boringcrypto"
+ENV CGO_ENABLED=1
+
+WORKDIR /build
+COPY . .
+
+RUN go build -o example -a -ldflags '-extldflags "-static"'
+
+RUN ./example
+
+FROM fips-awslinux-base
+
+COPY --from=fips-awslinux-builder /build/example /usr/local/bin/example
+
+ENTRYPOINT ["/usr/local/bin/example"]
